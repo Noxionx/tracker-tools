@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+
+# Project specific sensitive files
+.env
+.config
+*.rar
+
+# IDE
+.vscode/
+.idea/
