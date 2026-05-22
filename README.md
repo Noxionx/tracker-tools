@@ -8,6 +8,8 @@ It helps you decide whether a torrent should be admitted before sending it to Tr
 
 Tracker Tools was created to solve a practical issue with private tracker automation.
 
+This application is also, intentionally, almost fully vibe-coded: fast iteration, practical outcomes, and continuous cleanup/refactoring as real-world needs appear.
+
 Most private trackers require a minimum ratio to keep download access. In practice, many users rely on tools like autobrr + RSS feeds to catch newly published torrents (especially freeleech ones) and build upload through early seeding.
 
 That approach is fast, but usually not context-aware. It does not reason about your real ratio reserve or your available disk headroom before accepting new torrents. During high-volume tracker activity, this can lead to two concrete failures:
@@ -158,6 +160,37 @@ Create a `.env` file at the repository root.
 - Torr9 credentials (supports aliases):
   - `TORR9_USER` or `TOR9_USER`
   - `TORR9_PASSWORD` or `TORR9_PASS` or `TOR9_PASS`
+- CrazySpirits:
+  - `CRAZYSPIRITS_COOKIE`
+- Gemini:
+  - `GEMINI_TOKEN`
+- Generation-Free:
+  - `GFREE_TOKEN`
+- La Cale:
+  - `LACALE_USER`
+  - `LACALE_PASS`
+- Nexum:
+  - `NEXUM_TOKEN`
+- Nostradamus:
+  - `NOSTRADAMUS_PRIVATE_KEY` (or `NOSTRADAMUS_API_KEY` / `NOSTRADAMUS_PRIVATE_TICKET`)
+- TeamFlix:
+  - `TEAMFLIX_TOKEN`
+- TheOldSchool:
+  - `TOS_TOKEN`
+- TorrentLeech:
+  - `TL_USER`
+  - `TL_PASS`
+- tr4ker:
+  - `TR4KER_TOKEN` (or `TR4KER_API_KEY`)
+
+### Scraper Activation Policy
+
+- By default, no scraper is active.
+- A scraper becomes active automatically when its required credentials or token are present.
+- You can override auto-discovery with an explicit allow-list:
+  - `SCRAPERS_ENABLED=c411,torr9,gemini`
+
+When `SCRAPERS_ENABLED` is set, only listed scrapers are considered active.
 
 Example `.env` snippet:
 
@@ -385,6 +418,14 @@ Current state:
 - Production-ready container build.
 - GitHub Actions pipeline for tests, Docker build validation, and registry publishing.
 - Unit, service, and API integration test layers in place.
+
+## Credits
+
+This project reuses part of the original codebase ideas and scraper work from:
+- https://github.com/sabuontop/api-ratio
+- https://github.com/CorentinWicht/api-ratio (fork)
+
+Many thanks to both projects for the initial foundations.
 
 ## Next Hardening Steps
 

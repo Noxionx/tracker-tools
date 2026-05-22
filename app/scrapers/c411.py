@@ -7,7 +7,7 @@ from typing import Any
 
 from playwright.async_api import BrowserContext, Page, async_playwright
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.exceptions import MissingCredentialsError, ScrapingError
 from app.core.files import load_config_file, write_config_file
 from app.core.http import DEFAULT_USER_AGENT
@@ -17,6 +17,10 @@ logger = logging.getLogger(__name__)
 COOKIES_FILE = "c411_cookies.json"
 LOGIN_PAGE_URL = "https://c411.org/login"
 USER_STATS_URL = "https://c411.org/api/auth/me"
+
+
+def is_enabled(settings: Settings) -> bool:
+    return bool(settings.c411_user and settings.c411_pass)
 
 
 async def _refresh_cookies(context: BrowserContext, page: Page) -> bool:

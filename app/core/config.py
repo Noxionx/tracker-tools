@@ -3,14 +3,19 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        enable_decoding=False,
+    )
 
     app_name: str = "Tracker Tools API"
     app_description: str = (
@@ -41,6 +46,34 @@ class Settings(BaseSettings):
     torr9_password: str | None = None
     torr9_pass: str | None = None
     tor9_pass: str | None = None
+
+    # Optional explicit list of enabled scrapers, comma-separated in env.
+    # If empty, scraper activation is inferred from credentials/token presence.
+    scrapers_enabled: list[str] = Field(default_factory=list)
+
+    # Additional scraper credentials/tokens.
+    crazyspirits_cookie: str | None = None
+    gemini_token: str | None = None
+    gfree_token: str | None = None
+    lacale_user: str | None = None
+    lacale_pass: str | None = None
+    nexum_token: str | None = None
+    nostradamus_private_key: str | None = None
+    nostradamus_api_key: str | None = None
+    nostradamus_private_ticket: str | None = None
+    teamflix_token: str | None = None
+    tos_token: str | None = None
+    tl_user: str | None = None
+    tl_pass: str | None = None
+    tr4ker_token: str | None = None
+    tr4ker_api_key: str | None = None
+
+    @field_validator("scrapers_enabled", mode="before")
+    @classmethod
+    def _parse_scrapers_enabled(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
 
     @property
     def resolved_config_dir(self) -> Path:

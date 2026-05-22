@@ -6,7 +6,7 @@ from typing import Any
 
 from playwright.async_api import Page, async_playwright
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.exceptions import MissingCredentialsError, ScrapingError
 from app.core.files import load_config_file, write_config_file
 from app.core.http import DEFAULT_USER_AGENT
@@ -16,6 +16,12 @@ logger = logging.getLogger(__name__)
 TOKEN_FILE = "torr9_token.txt"
 LOGIN_PAGE_URL = "https://torr9.net/login"
 USER_STATS_URL = "https://api.torr9.net/api/v1/users/me"
+
+
+def is_enabled(settings: Settings) -> bool:
+    username = settings.torr9_user or settings.tor9_user
+    password = settings.torr9_password or settings.torr9_pass or settings.tor9_pass
+    return bool(username and password)
 
 
 def _resolve_credentials() -> tuple[str | None, str | None]:
