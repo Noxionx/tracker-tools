@@ -238,3 +238,54 @@ async def test_forecast_torrent_positive_overrides_are_applied(monkeypatch) -> N
     assert observed["max_storage_bytes"] == 123456
     assert decision.minimum_ratio == 1.2
     assert decision.max_storage_bytes == 123456
+
+
+@pytest.mark.asyncio
+async def test_forecast_torrent_freeleech_impacts_storage_not_ratio(monkeypatch) -> None:
+    async def fake_ensure_fresh_tracker_stats(_db, _tracker):
+        return SimpleNamespace(raw_upload=100.0, raw_download=100.0, raw_ratio=1.0)
+
+    async def fake_get_active_tracker_deltas(_tracker):
+        return 0.0, 0.0, []
+
+    async def fake_get_pending_reserved_size(_db, _tracker):
+        return 0
+
+    observed_extra_reserved: list[int] = []
+
+    def fake_storage_allowed(*, extra_reserved_bytes: int, max_storage_bytes: int | None):
+        observed_extra_reserved.append(extra_reserved_bytes)
+        assert max_storage_bytes is None
+        return True, "Storage allowed", {
+            "current_used_bytes": 10,
+            "forecast_used_bytes": 10 + extra_reserved_bytes,
+            "max_storage_bytes": 1000,
+        }
+
+    monkeypatch.setattr("app.services.torrent_service.ensure_fresh_tracker_stats", fake_ensure_fresh_tracker_stats)
+    monkeypatch.setattr("app.services.torrent_service._get_active_tracker_deltas", fake_get_active_tracker_deltas)
+    monkeypatch.setattr("app.services.torrent_service._get_pending_reserved_size", fake_get_pending_reserved_size)
+    monkeypatch.setattr("app.services.torrent_service.storage_allowed", fake_storage_allowed)
+    monkeypatch.setattr("app.services.torrent_service._tracker_min_ratio", lambda _tracker: 0.8)
+
+    normal_request = ForecastRequest(
+        tracker="c411",
+        torrent="magnet:?xt=urn:btih:normal",
+        size_bytes=50,
+        is_freeleech=False,
+    )
+    freeleech_request = ForecastRequest(
+        tracker="c411",
+        torrent="magnet:?xt=urn:btih:free",
+        size_bytes=50,
+        is_freeleech=True,
+    )
+
+    normal_decision = await forecast_torrent(db=None, request=normal_request)
+    freeleech_decision = await forecast_torrent(db=None, request=freeleech_request)
+
+    assert observed_extra_reserved == [50, 50]
+    assert normal_decision.forecast_download == 150.0
+    assert normal_decision.allowed is False
+    assert freeleech_decision.forecast_download == 100.0
+    assert freeleech_decision.allowed is True

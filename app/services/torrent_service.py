@@ -144,8 +144,9 @@ async def forecast_torrent(db: AsyncSession, request: ForecastRequest) -> Decisi
     pending_reserved_size = await _get_pending_reserved_size(db, tracker)
 
     candidate_size = int(request.size_bytes or 0)
+    candidate_ratio_download = 0 if request.is_freeleech else candidate_size
     forecast_upload = stats.raw_upload + active_upload_delta
-    forecast_download = stats.raw_download + active_download_delta + pending_reserved_size + candidate_size
+    forecast_download = stats.raw_download + active_download_delta + pending_reserved_size + candidate_ratio_download
     if forecast_download > 0:
         forecast_ratio = forecast_upload / forecast_download
     elif forecast_upload > 0:

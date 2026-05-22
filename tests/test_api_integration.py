@@ -69,6 +69,7 @@ async def test_forecast_accepts_minimal_payload(api_client, monkeypatch) -> None
     async def fake_forecast(_db, request):
         assert request.tracker == "c411"
         assert request.torrent.startswith("magnet:")
+        assert request.is_freeleech is False
         assert request.min_ratio is None
         assert request.max_storage_bytes is None
         return DecisionResponse(
@@ -114,6 +115,7 @@ async def test_admit_accepts_minimal_payload(api_client, monkeypatch) -> None:
     async def fake_admit(_db, request):
         assert request.tracker == "torr9"
         assert request.torrent.startswith("magnet:")
+        assert request.is_freeleech is False
         assert request.min_ratio is None
         assert request.max_storage_bytes is None
         return DecisionResponse(

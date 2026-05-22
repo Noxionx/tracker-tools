@@ -288,12 +288,16 @@ Interactive OpenAPI docs are available at `/docs` when the application is runnin
 
 ### Forecast (minimal payload)
 
-`min_ratio` and `max_storage_bytes` are optional and use defaults when omitted.
+`min_ratio`, `max_storage_bytes` and `is_freeleech` are optional.
+
+- Omit `min_ratio` and `max_storage_bytes` to use configured defaults.
+- Set `is_freeleech=true` to ignore candidate download impact on ratio forecast while still applying storage constraints.
 
 ```json
 {
   "tracker": "c411",
-  "torrent": "magnet:?xt=urn:btih:..."
+  "torrent": "magnet:?xt=urn:btih:...",
+  "is_freeleech": true
 }
 ```
 

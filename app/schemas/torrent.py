@@ -14,6 +14,10 @@ class ForecastRequest(BaseModel):
         default=None,
         description="Optional known torrent size. Recommended for dry-run forecasts.",
     )
+    is_freeleech: bool = Field(
+        default=False,
+        description="If true, torrent does not add download volume for ratio forecast but still reserves storage.",
+    )
     min_ratio: float | None = None
     max_storage_bytes: int | None = None
 
