@@ -6,8 +6,8 @@ import pytest
 from sqlalchemy import select
 
 from app.models.tracker import TorrentReservation, TrackedTorrent
-from app.schemas.torrent import AddTorrentRequest, DecisionResponse
-from app.services.torrent_service import admit_torrent
+from app.schemas.torrent import AddTorrentRequest, DecisionResponse, ForecastRequest
+from app.services.torrent_service import admit_torrent, forecast_torrent
 
 
 @pytest.mark.asyncio
@@ -154,3 +154,87 @@ async def test_admit_torrent_failure_marks_reservation_failed(db_session_factory
     assert len(reservations) == 1
     assert reservations[0].status == "failed"
     assert len(tracked) == 0
+
+
+@pytest.mark.asyncio
+async def test_forecast_torrent_zero_overrides_fall_back_to_config(monkeypatch) -> None:
+    async def fake_ensure_fresh_tracker_stats(_db, _tracker):
+        return SimpleNamespace(raw_upload=100.0, raw_download=50.0, raw_ratio=2.0)
+
+    async def fake_get_active_tracker_deltas(_tracker):
+        return 0.0, 0.0, []
+
+    async def fake_get_pending_reserved_size(_db, _tracker):
+        return 0
+
+    observed: dict[str, int | None] = {"max_storage_bytes": -1}
+
+    def fake_storage_allowed(*, extra_reserved_bytes: int, max_storage_bytes: int | None):
+        assert extra_reserved_bytes == 0
+        observed["max_storage_bytes"] = max_storage_bytes
+        return True, "Storage allowed", {
+            "current_used_bytes": 10,
+            "forecast_used_bytes": 10,
+            "max_storage_bytes": 999,
+        }
+
+    monkeypatch.setattr("app.services.torrent_service.ensure_fresh_tracker_stats", fake_ensure_fresh_tracker_stats)
+    monkeypatch.setattr("app.services.torrent_service._get_active_tracker_deltas", fake_get_active_tracker_deltas)
+    monkeypatch.setattr("app.services.torrent_service._get_pending_reserved_size", fake_get_pending_reserved_size)
+    monkeypatch.setattr("app.services.torrent_service.storage_allowed", fake_storage_allowed)
+    monkeypatch.setattr("app.services.torrent_service._tracker_min_ratio", lambda _tracker: 1.6)
+
+    request = ForecastRequest(
+        tracker="c411",
+        torrent="magnet:?xt=urn:btih:abc",
+        min_ratio=0,
+        max_storage_bytes=0,
+    )
+
+    decision = await forecast_torrent(db=None, request=request)
+
+    assert observed["max_storage_bytes"] is None
+    assert decision.minimum_ratio == 1.6
+    assert decision.max_storage_bytes == 999
+
+
+@pytest.mark.asyncio
+async def test_forecast_torrent_positive_overrides_are_applied(monkeypatch) -> None:
+    async def fake_ensure_fresh_tracker_stats(_db, _tracker):
+        return SimpleNamespace(raw_upload=100.0, raw_download=50.0, raw_ratio=2.0)
+
+    async def fake_get_active_tracker_deltas(_tracker):
+        return 0.0, 0.0, []
+
+    async def fake_get_pending_reserved_size(_db, _tracker):
+        return 0
+
+    observed: dict[str, int | None] = {"max_storage_bytes": None}
+
+    def fake_storage_allowed(*, extra_reserved_bytes: int, max_storage_bytes: int | None):
+        assert extra_reserved_bytes == 0
+        observed["max_storage_bytes"] = max_storage_bytes
+        return True, "Storage allowed", {
+            "current_used_bytes": 10,
+            "forecast_used_bytes": 10,
+            "max_storage_bytes": 999,
+        }
+
+    monkeypatch.setattr("app.services.torrent_service.ensure_fresh_tracker_stats", fake_ensure_fresh_tracker_stats)
+    monkeypatch.setattr("app.services.torrent_service._get_active_tracker_deltas", fake_get_active_tracker_deltas)
+    monkeypatch.setattr("app.services.torrent_service._get_pending_reserved_size", fake_get_pending_reserved_size)
+    monkeypatch.setattr("app.services.torrent_service.storage_allowed", fake_storage_allowed)
+    monkeypatch.setattr("app.services.torrent_service._tracker_min_ratio", lambda _tracker: 1.6)
+
+    request = ForecastRequest(
+        tracker="c411",
+        torrent="magnet:?xt=urn:btih:def",
+        min_ratio=1.2,
+        max_storage_bytes=123456,
+    )
+
+    decision = await forecast_torrent(db=None, request=request)
+
+    assert observed["max_storage_bytes"] == 123456
+    assert decision.minimum_ratio == 1.2
+    assert decision.max_storage_bytes == 123456

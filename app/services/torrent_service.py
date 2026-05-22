@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.time import ensure_utc_aware, utcnow
+from app.core.time import utcnow
 from app.models.tracker import TorrentReservation, TrackedTorrent
 from app.schemas.torrent import AddTorrentRequest, DecisionResponse, ForecastRequest
 from app.services.storage_service import storage_allowed
@@ -82,9 +82,6 @@ async def _update_reservation_status(
 
 async def _track_added_torrent(db: AsyncSession, tracker: str, torrent: Any) -> None:
     now = utcnow()
-    added_at = ensure_utc_aware(torrent.added_date) or now
-    completed_at = ensure_utc_aware(torrent.done_date)
-
     tracked = TrackedTorrent(
         tracker_name=tracker,
         torrent_hash=torrent.hash_string,
@@ -92,8 +89,8 @@ async def _track_added_torrent(db: AsyncSession, tracker: str, torrent: Any) -> 
         name=torrent.name,
         size_bytes=torrent.total_size,
         status="added",
-        added_at=added_at,
-        completed_at=completed_at,
+        added_at=torrent.added_date or now,
+        completed_at=torrent.done_date,
         removed_at=None,
         downloaded_at_add=torrent.downloaded_ever,
         uploaded_at_add=torrent.uploaded_ever,
@@ -134,7 +131,13 @@ async def _get_active_tracker_deltas(tracker: str) -> tuple[float, float, list[d
 
 async def forecast_torrent(db: AsyncSession, request: ForecastRequest) -> DecisionResponse:
     tracker = request.tracker
-    min_ratio = request.min_ratio if request.min_ratio is not None else _tracker_min_ratio(tracker)
+    ratio_override = request.min_ratio
+    min_ratio = ratio_override if ratio_override is not None and ratio_override > 0 else _tracker_min_ratio(tracker)
+    max_storage_override = (
+        request.max_storage_bytes
+        if request.max_storage_bytes is not None and request.max_storage_bytes > 0
+        else None
+    )
 
     stats = await ensure_fresh_tracker_stats(db, tracker)
     active_upload_delta, active_download_delta, _ = await _get_active_tracker_deltas(tracker)
@@ -143,12 +146,17 @@ async def forecast_torrent(db: AsyncSession, request: ForecastRequest) -> Decisi
     candidate_size = int(request.size_bytes or 0)
     forecast_upload = stats.raw_upload + active_upload_delta
     forecast_download = stats.raw_download + active_download_delta + pending_reserved_size + candidate_size
-    forecast_ratio = forecast_upload / forecast_download if forecast_download > 0 else (999.0 if forecast_upload > 0 else 0.0)
+    if forecast_download > 0:
+        forecast_ratio = forecast_upload / forecast_download
+    elif forecast_upload > 0:
+        forecast_ratio = 999.0
+    else:
+        forecast_ratio = 0.0
 
     extra_storage = pending_reserved_size + candidate_size
     storage_ok, storage_reason, storage = storage_allowed(
         extra_reserved_bytes=extra_storage,
-        max_storage_bytes=request.max_storage_bytes,
+        max_storage_bytes=max_storage_override,
     )
     ratio_ok = forecast_ratio >= min_ratio
 
@@ -173,7 +181,7 @@ async def forecast_torrent(db: AsyncSession, request: ForecastRequest) -> Decisi
         forecast_download=forecast_download,
         current_storage_bytes=storage["current_used_bytes"],
         forecast_storage_bytes=storage["forecast_used_bytes"],
-        max_storage_bytes=request.max_storage_bytes or storage["max_storage_bytes"],
+        max_storage_bytes=max_storage_override or storage["max_storage_bytes"],
         torrent_hash=None,
         torrent_name=None,
         torrent_size_bytes=candidate_size,

@@ -24,7 +24,10 @@ def compute_ratio(raw_upload: float, raw_download: float) -> float:
     return 0.0
 
 
-async def get_latest_tracker_stats(db: AsyncSession, tracker: str) -> TrackerStatsSnapshot | None:
+async def get_latest_tracker_stats(
+    db: AsyncSession,
+    tracker: str,
+) -> TrackerStatsSnapshot | None:
     result = await db.execute(
         select(TrackerStatsSnapshot)
         .where(TrackerStatsSnapshot.tracker_name == tracker)
@@ -97,7 +100,8 @@ async def refresh_all_trackers(db: AsyncSession) -> None:
 
 async def ensure_fresh_tracker_stats(db: AsyncSession, tracker: str) -> TrackerStatsSnapshot:
     latest = await get_latest_tracker_stats(db, tracker)
-    max_age = timedelta(minutes=get_settings().max_tracker_stats_age_minutes)
+    max_age_minutes = get_settings().max_tracker_stats_age_minutes
+    max_age = timedelta(minutes=max_age_minutes)
 
     if latest is None:
         return await refresh_tracker(db, tracker)
@@ -106,7 +110,8 @@ async def ensure_fresh_tracker_stats(db: AsyncSession, tracker: str) -> TrackerS
     if scraped_at is None:
         raise RuntimeError("Latest tracker stats have no scraped_at timestamp")
 
-    if utcnow() - scraped_at > max_age:
+    stale_for = utcnow() - scraped_at
+    if stale_for > max_age:
         refreshed = await refresh_tracker(db, tracker)
         if refreshed.error:
             raise RuntimeError(f"Tracker stats are stale and refresh failed: {refreshed.error}")
@@ -118,7 +123,11 @@ async def ensure_fresh_tracker_stats(db: AsyncSession, tracker: str) -> TrackerS
     return latest
 
 
-async def get_tracker_history(db: AsyncSession, tracker: str, limit: int = 100) -> list[TrackerStatsSnapshot]:
+async def get_tracker_history(
+    db: AsyncSession,
+    tracker: str,
+    limit: int = 100,
+) -> list[TrackerStatsSnapshot]:
     result = await db.execute(
         select(TrackerStatsSnapshot)
         .where(TrackerStatsSnapshot.tracker_name == tracker)
