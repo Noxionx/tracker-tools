@@ -1,28 +1,41 @@
+from __future__ import annotations
+
 import asyncio
-from datetime import datetime, timedelta
-from typing import Any, Optional
+from datetime import timedelta
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tracker_torrent_models import TorrentReservation, TrackedTorrent
-from torrent_management_requests import AddTorrentRequest, DecisionResponse, ForecastRequest
-from enviroment_variable_utilities import get_download_dir, get_tracker_min_ratio
-from storage_management import storage_allowed
-from tracker_domain_utils import torrent_belongs_to_tracker
-from tracker_stats_service import ensure_fresh_tracker_stats
-from torrent_manager import add_torrent, list_torrents
+from app.core.config import get_settings
+from app.core.time import utcnow
+from app.models.tracker import TorrentReservation, TrackedTorrent
+from app.schemas.torrent import AddTorrentRequest, DecisionResponse, ForecastRequest
+from app.services.storage_service import storage_allowed
+from app.services.tracker_domain import torrent_belongs_to_tracker
+from app.services.tracker_stats_service import ensure_fresh_tracker_stats
+from app.services.transmission_service import add_torrent, list_torrents
 
 _tracker_locks: dict[str, asyncio.Lock] = {}
 
 
-def get_tracker_lock(tracker: str) -> asyncio.Lock:
+def _get_tracker_lock(tracker: str) -> asyncio.Lock:
     if tracker not in _tracker_locks:
         _tracker_locks[tracker] = asyncio.Lock()
     return _tracker_locks[tracker]
 
 
-async def get_pending_reserved_size(db: AsyncSession, tracker: str) -> int:
+def _tracker_min_ratio(tracker: str) -> float:
+    env_key = f"{tracker.upper().replace('-', '_')}_MIN_RATIO"
+    import os
+
+    env_value = os.getenv(env_key)
+    if env_value:
+        return float(env_value)
+    return get_settings().default_min_ratio
+
+
+async def _get_pending_reserved_size(db: AsyncSession, tracker: str) -> int:
     result = await db.execute(
         select(TorrentReservation).where(
             TorrentReservation.tracker_name == tracker,
@@ -33,18 +46,14 @@ async def get_pending_reserved_size(db: AsyncSession, tracker: str) -> int:
     return sum(item.size_bytes for item in reservations)
 
 
-async def create_reservation(
+async def _create_reservation(
     db: AsyncSession,
     tracker: str,
     size_bytes: int,
-    name: str = "",
-    torrent_hash: Optional[str] = None,
 ) -> TorrentReservation:
-    now = datetime.utcnow()
+    now = utcnow()
     reservation = TorrentReservation(
         tracker_name=tracker,
-        torrent_hash=torrent_hash,
-        name=name,
         size_bytes=size_bytes,
         status="pending",
         created_at=now,
@@ -56,12 +65,12 @@ async def create_reservation(
     return reservation
 
 
-async def update_reservation_status(
+async def _update_reservation_status(
     db: AsyncSession,
     reservation: TorrentReservation,
     status: str,
-    torrent_hash: Optional[str] = None,
-    name: Optional[str] = None,
+    torrent_hash: str | None = None,
+    name: str | None = None,
 ) -> None:
     reservation.status = status
     if torrent_hash:
@@ -71,12 +80,8 @@ async def update_reservation_status(
     await db.commit()
 
 
-async def track_added_torrent(
-    db: AsyncSession,
-    tracker: str,
-    torrent: Any,
-) -> None:
-    now = datetime.utcnow()
+async def _track_added_torrent(db: AsyncSession, tracker: str, torrent: Any) -> None:
+    now = utcnow()
     tracked = TrackedTorrent(
         tracker_name=tracker,
         torrent_hash=torrent.hash_string,
@@ -96,9 +101,8 @@ async def track_added_torrent(
     await db.commit()
 
 
-async def get_active_tracker_deltas(tracker: str) -> tuple[float, float, list[dict[str, Any]]]:
+async def _get_active_tracker_deltas(tracker: str) -> tuple[float, float, list[dict[str, Any]]]:
     torrents = await list_torrents()
-
     upload_delta = 0.0
     download_delta = 0.0
     matched: list[dict[str, Any]] = []
@@ -125,32 +129,25 @@ async def get_active_tracker_deltas(tracker: str) -> tuple[float, float, list[di
     return upload_delta, download_delta, matched
 
 
-async def forecast_torrent(
-    db: AsyncSession,
-    request: ForecastRequest,
-) -> DecisionResponse:
+async def forecast_torrent(db: AsyncSession, request: ForecastRequest) -> DecisionResponse:
     tracker = request.tracker
-    min_ratio = request.min_ratio if request.min_ratio is not None else get_tracker_min_ratio(tracker)
+    min_ratio = request.min_ratio if request.min_ratio is not None else _tracker_min_ratio(tracker)
 
     stats = await ensure_fresh_tracker_stats(db, tracker)
-    active_upload_delta, active_download_delta, _ = await get_active_tracker_deltas(tracker)
-    pending_reserved_size = await get_pending_reserved_size(db, tracker)
+    active_upload_delta, active_download_delta, _ = await _get_active_tracker_deltas(tracker)
+    pending_reserved_size = await _get_pending_reserved_size(db, tracker)
 
     candidate_size = int(request.size_bytes or 0)
-
     forecast_upload = stats.raw_upload + active_upload_delta
     forecast_download = stats.raw_download + active_download_delta + pending_reserved_size + candidate_size
-    forecast_ratio = forecast_upload / forecast_download if forecast_download > 0 else 999 if forecast_upload > 0 else 0
+    forecast_ratio = forecast_upload / forecast_download if forecast_download > 0 else (999.0 if forecast_upload > 0 else 0.0)
 
     extra_storage = pending_reserved_size + candidate_size
     storage_ok, storage_reason, storage = storage_allowed(
         extra_reserved_bytes=extra_storage,
         max_storage_bytes=request.max_storage_bytes,
     )
-
     ratio_ok = forecast_ratio >= min_ratio
-
-    allowed = ratio_ok and storage_ok
 
     if not ratio_ok:
         reason = "Forecast ratio would be below minimum ratio"
@@ -160,7 +157,7 @@ async def forecast_torrent(
         reason = "Torrent allowed"
 
     return DecisionResponse(
-        allowed=allowed,
+        allowed=ratio_ok and storage_ok,
         added=False,
         reason=reason,
         tracker=tracker,
@@ -180,15 +177,11 @@ async def forecast_torrent(
     )
 
 
-async def check_and_add_torrent(
-    db: AsyncSession,
-    request: AddTorrentRequest,
-) -> DecisionResponse:
+async def check_and_add_torrent(db: AsyncSession, request: AddTorrentRequest) -> DecisionResponse:
     tracker = request.tracker
 
-    async with get_tracker_lock(tracker):
+    async with _get_tracker_lock(tracker):
         decision = await forecast_torrent(db, request)
-
         if not decision.allowed or request.dry_run:
             return decision
 
@@ -198,17 +191,12 @@ async def check_and_add_torrent(
             return decision
 
         candidate_size = int(request.size_bytes or 0)
-        reservation = await create_reservation(
-            db,
-            tracker=tracker,
-            size_bytes=candidate_size,
-        )
+        reservation = await _create_reservation(db, tracker=tracker, size_bytes=candidate_size)
 
         try:
             download_dir = request.download_dir
-            if download_dir is None:
-                configured_download_dir = get_download_dir()
-                download_dir = str(configured_download_dir) if configured_download_dir else None
+            if download_dir is None and get_settings().download_dir is not None:
+                download_dir = str(get_settings().download_dir)
 
             added = await add_torrent(
                 torrent=request.torrent,
@@ -216,14 +204,14 @@ async def check_and_add_torrent(
                 paused=request.paused,
             )
 
-            await update_reservation_status(
+            await _update_reservation_status(
                 db,
                 reservation,
                 "added",
                 torrent_hash=added.hash_string,
                 name=added.name,
             )
-            await track_added_torrent(db, tracker, added)
+            await _track_added_torrent(db, tracker, added)
 
             decision.added = True
             decision.reason = "Torrent accepted and added to Transmission"
@@ -231,7 +219,6 @@ async def check_and_add_torrent(
             decision.torrent_name = added.name
             decision.torrent_size_bytes = added.total_size or candidate_size
             return decision
-
         except Exception as exc:
-            await update_reservation_status(db, reservation, "failed")
+            await _update_reservation_status(db, reservation, "failed")
             raise RuntimeError(f"Failed to add torrent to Transmission: {exc}") from exc

@@ -1,30 +1,30 @@
+from __future__ import annotations
+
 import logging
-from datetime import datetime, timedelta
-from typing import Any, Dict, Optional
+from datetime import timedelta
+from typing import Any
 
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tracker_torrent_models import TrackerStatsSnapshot
-from scraper import get_stats
-from enviroment_variable_utilities import get_max_tracker_stats_age_minutes
-from util import list_scrappers
+from app.core.config import get_settings
+from app.core.time import utcnow
+from app.models.tracker import TrackerStatsSnapshot
+from app.services.scraper_service import get_stats
+from app.services.tracker_registry import list_scrapers
 
-logger = logging.getLogger("tracker_stats_service")
+logger = logging.getLogger(__name__)
 
 
 def compute_ratio(raw_upload: float, raw_download: float) -> float:
     if raw_download > 0:
         return raw_upload / raw_download
     if raw_upload > 0:
-        return 999
-    return 0
+        return 999.0
+    return 0.0
 
 
-async def get_latest_tracker_stats(
-    db: AsyncSession,
-    tracker: str,
-) -> Optional[TrackerStatsSnapshot]:
+async def get_latest_tracker_stats(db: AsyncSession, tracker: str) -> TrackerStatsSnapshot | None:
     result = await db.execute(
         select(TrackerStatsSnapshot)
         .where(TrackerStatsSnapshot.tracker_name == tracker)
@@ -37,18 +37,16 @@ async def get_latest_tracker_stats(
 async def save_tracker_stats(
     db: AsyncSession,
     tracker: str,
-    stats: Dict[str, Any],
-    error: Optional[str] = None,
+    stats: dict[str, Any],
+    error: str | None = None,
 ) -> TrackerStatsSnapshot:
-    now = datetime.utcnow()
-
+    now = utcnow()
     raw_upload = float(stats.get("raw_upload", 0))
     raw_download = float(stats.get("raw_download", 0))
     raw_ratio = compute_ratio(raw_upload, raw_download)
     bonus = float(stats.get("bonus", 0))
 
     previous = await get_latest_tracker_stats(db, tracker)
-
     changed_at = now
     if previous:
         same_values = (
@@ -78,36 +76,33 @@ async def save_tracker_stats(
 
 
 async def refresh_tracker(db: AsyncSession, tracker: str) -> TrackerStatsSnapshot:
-    logger.info("updating stats for tracker: %s", tracker)
+    logger.info("Refreshing stats for tracker: %s", tracker)
     try:
         stats = await get_stats(tracker)
         return await save_tracker_stats(db, tracker, stats)
     except Exception as exc:
-        logger.error("Error while scraping %s: %s", tracker, exc)
+        logger.error("Scraper error for %s: %s", tracker, exc)
         return await save_tracker_stats(
             db,
             tracker,
-            {"raw_upload": 0, "raw_download": 0, "bonus": 0},
+            {"raw_upload": 0.0, "raw_download": 0.0, "bonus": 0.0},
             error=str(exc),
         )
 
 
 async def refresh_all_trackers(db: AsyncSession) -> None:
-    for tracker in list_scrappers():
+    for tracker in list_scrapers():
         await refresh_tracker(db, tracker)
 
 
-async def ensure_fresh_tracker_stats(
-    db: AsyncSession,
-    tracker: str,
-) -> TrackerStatsSnapshot:
+async def ensure_fresh_tracker_stats(db: AsyncSession, tracker: str) -> TrackerStatsSnapshot:
     latest = await get_latest_tracker_stats(db, tracker)
-    max_age = timedelta(minutes=get_max_tracker_stats_age_minutes())
+    max_age = timedelta(minutes=get_settings().max_tracker_stats_age_minutes)
 
     if latest is None:
         return await refresh_tracker(db, tracker)
 
-    if datetime.utcnow() - latest.scraped_at > max_age:
+    if utcnow() - latest.scraped_at > max_age:
         refreshed = await refresh_tracker(db, tracker)
         if refreshed.error:
             raise RuntimeError(f"Tracker stats are stale and refresh failed: {refreshed.error}")
@@ -119,11 +114,7 @@ async def ensure_fresh_tracker_stats(
     return latest
 
 
-async def get_tracker_history(
-    db: AsyncSession,
-    tracker: str,
-    limit: int = 100,
-) -> list[TrackerStatsSnapshot]:
+async def get_tracker_history(db: AsyncSession, tracker: str, limit: int = 100) -> list[TrackerStatsSnapshot]:
     result = await db.execute(
         select(TrackerStatsSnapshot)
         .where(TrackerStatsSnapshot.tracker_name == tracker)
@@ -133,14 +124,14 @@ async def get_tracker_history(
     return list(result.scalars().all())
 
 
-def serialize_tracker_stats(row: TrackerStatsSnapshot) -> Dict[str, Any]:
+def serialize_tracker_stats(row: TrackerStatsSnapshot) -> dict[str, Any]:
     return {
         "tracker": row.tracker_name,
         "ratio": row.raw_ratio,
         "upload": row.raw_upload,
         "download": row.raw_download,
         "bonus": row.bonus,
-        "scraped_at": row.scraped_at.isoformat(),
-        "changed_at": row.changed_at.isoformat(),
+        "scraped_at": row.scraped_at,
+        "changed_at": row.changed_at,
         "error": row.error,
     }

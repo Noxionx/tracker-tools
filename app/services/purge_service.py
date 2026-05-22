@@ -1,26 +1,27 @@
-from datetime import datetime, timezone
-from typing import Any, Optional
+from __future__ import annotations
 
-from tracker_domain_utils import torrent_belongs_to_tracker
-from torrent_manager import list_torrents, remove_torrent
+from datetime import timezone
+from typing import Any
+
+from app.core.time import utcnow
+from app.services.tracker_domain import torrent_belongs_to_tracker
+from app.services.transmission_service import list_torrents, remove_torrent
 
 
-def _age_hours(added_date: Any) -> Optional[float]:
+def _age_hours(added_date: Any) -> float | None:
     if not added_date:
         return None
-
-    now = datetime.now(timezone.utc)
 
     if added_date.tzinfo is None:
         added_date = added_date.replace(tzinfo=timezone.utc)
 
-    return (now - added_date).total_seconds() / 3600
+    return (utcnow() - added_date).total_seconds() / 3600
 
 
 async def purge_torrents(
-    tracker: Optional[str],
-    target_ratio: Optional[float],
-    max_lifetime_hours: Optional[int],
+    tracker: str | None,
+    target_ratio: float | None,
+    max_lifetime_hours: int | None,
     delete_data: bool,
     dry_run: bool,
 ) -> dict[str, Any]:
@@ -32,7 +33,6 @@ async def purge_torrents(
             continue
 
         reasons: list[str] = []
-
         if target_ratio is not None and torrent.ratio >= target_ratio:
             reasons.append("ratio_above_target")
 
@@ -40,20 +40,18 @@ async def purge_torrents(
         if max_lifetime_hours is not None and age is not None and age >= max_lifetime_hours:
             reasons.append("lifetime_exceeded")
 
-        if not reasons:
-            continue
-
-        matched.append(
-            {
-                "id": torrent.id,
-                "hash": torrent.hash_string,
-                "name": torrent.name,
-                "ratio": torrent.ratio,
-                "age_hours": age,
-                "size_bytes": torrent.total_size,
-                "reasons": reasons,
-            }
-        )
+        if reasons:
+            matched.append(
+                {
+                    "id": torrent.id,
+                    "hash": torrent.hash_string,
+                    "name": torrent.name,
+                    "ratio": torrent.ratio,
+                    "age_hours": age,
+                    "size_bytes": torrent.total_size,
+                    "reasons": reasons,
+                }
+            )
 
     if not dry_run:
         for item in matched:
