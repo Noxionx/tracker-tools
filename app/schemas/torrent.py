@@ -7,8 +7,7 @@ from pydantic import BaseModel, Field
 
 class ForecastRequest(BaseModel):
     tracker: str
-    torrent: str | None = Field(
-        default=None,
+    torrent: str = Field(
         description="Magnet URI, local torrent path, or URL understood by Transmission.",
     )
     size_bytes: int | None = Field(

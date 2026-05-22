@@ -177,17 +177,12 @@ async def forecast_torrent(db: AsyncSession, request: ForecastRequest) -> Decisi
     )
 
 
-async def check_and_add_torrent(db: AsyncSession, request: AddTorrentRequest) -> DecisionResponse:
+async def admit_torrent(db: AsyncSession, request: AddTorrentRequest) -> DecisionResponse:
     tracker = request.tracker
 
     async with _get_tracker_lock(tracker):
         decision = await forecast_torrent(db, request)
         if not decision.allowed or request.dry_run:
-            return decision
-
-        if not request.torrent:
-            decision.allowed = False
-            decision.reason = "Missing torrent value"
             return decision
 
         candidate_size = int(request.size_bytes or 0)

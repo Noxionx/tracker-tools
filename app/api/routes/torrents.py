@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 from app.api.dependencies import DBSession
 from app.schemas.torrent import AddTorrentRequest, ForecastRequest, PurgeRequest
 from app.services.purge_service import purge_torrents
-from app.services.torrent_service import check_and_add_torrent, forecast_torrent
+from app.services.torrent_service import admit_torrent, forecast_torrent
 from app.services.transmission_service import list_torrents, serialize_torrent
 
 router = APIRouter(tags=["torrents"])
@@ -25,10 +25,10 @@ async def forecast(request: ForecastRequest, db: DBSession) -> Any:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.post("/torrents/check-and-add")
-async def check_and_add(request: AddTorrentRequest, db: DBSession) -> Any:
+@router.post("/torrents/admit")
+async def admit_torrent_endpoint(request: AddTorrentRequest, db: DBSession) -> Any:
     try:
-        return await check_and_add_torrent(db, request)
+        return await admit_torrent(db, request)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

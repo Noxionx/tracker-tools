@@ -19,7 +19,7 @@ async def root() -> dict[str, Any]:
             "/trackers/{tracker}/refresh",
             "/torrents",
             "/torrents/forecast",
-            "/torrents/check-and-add",
+            "/torrents/admit",
             "/torrents/purge",
             "/storage",
         ],
