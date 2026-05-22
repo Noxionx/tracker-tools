@@ -8,7 +8,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.time import utcnow
+from app.core.time import ensure_utc_aware, utcnow
 from app.models.tracker import TrackerStatsSnapshot
 from app.services.scraper_service import get_stats
 from app.services.tracker_registry import list_scrapers
@@ -102,7 +102,11 @@ async def ensure_fresh_tracker_stats(db: AsyncSession, tracker: str) -> TrackerS
     if latest is None:
         return await refresh_tracker(db, tracker)
 
-    if utcnow() - latest.scraped_at > max_age:
+    scraped_at = ensure_utc_aware(latest.scraped_at)
+    if scraped_at is None:
+        raise RuntimeError("Latest tracker stats have no scraped_at timestamp")
+
+    if utcnow() - scraped_at > max_age:
         refreshed = await refresh_tracker(db, tracker)
         if refreshed.error:
             raise RuntimeError(f"Tracker stats are stale and refresh failed: {refreshed.error}")

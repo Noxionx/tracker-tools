@@ -7,6 +7,7 @@ from datetime import datetime
 from transmission_rpc import Client
 
 from app.core.config import get_settings
+from app.core.time import ensure_utc_aware
 
 
 @dataclass(slots=True)
@@ -56,6 +57,9 @@ def _extract_trackers(torrent: object) -> list[str]:
 
 
 def _to_info(torrent: object) -> TorrentInfo:
+    added_date = getattr(torrent, "added_date", None) or getattr(torrent, "addedDate", None)
+    done_date = getattr(torrent, "done_date", None) or getattr(torrent, "doneDate", None)
+
     return TorrentInfo(
         id=int(getattr(torrent, "id")),
         hash_string=str(getattr(torrent, "hash_string", "") or getattr(torrent, "hashString", "")),
@@ -69,8 +73,8 @@ def _to_info(torrent: object) -> TorrentInfo:
         ),
         ratio=float(getattr(torrent, "ratio", 0) or 0),
         status=str(getattr(torrent, "status", "")),
-        added_date=getattr(torrent, "added_date", None) or getattr(torrent, "addedDate", None),
-        done_date=getattr(torrent, "done_date", None) or getattr(torrent, "doneDate", None),
+        added_date=ensure_utc_aware(added_date),
+        done_date=ensure_utc_aware(done_date),
         download_dir=getattr(torrent, "download_dir", None) or getattr(torrent, "downloadDir", None),
         trackers=_extract_trackers(torrent),
     )

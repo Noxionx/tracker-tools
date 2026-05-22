@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from datetime import timezone
 from typing import Any
 
-from app.core.time import utcnow
+from app.core.time import ensure_utc_aware, utcnow
 from app.services.tracker_domain import torrent_belongs_to_tracker
 from app.services.transmission_service import list_torrents, remove_torrent
 
@@ -12,8 +11,9 @@ def _age_hours(added_date: Any) -> float | None:
     if not added_date:
         return None
 
-    if added_date.tzinfo is None:
-        added_date = added_date.replace(tzinfo=timezone.utc)
+    added_date = ensure_utc_aware(added_date)
+    if added_date is None:
+        return None
 
     return (utcnow() - added_date).total_seconds() / 3600
 

@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.time import utcnow
+from app.core.time import ensure_utc_aware, utcnow
 from app.models.tracker import TorrentReservation, TrackedTorrent
 from app.schemas.torrent import AddTorrentRequest, DecisionResponse, ForecastRequest
 from app.services.storage_service import storage_allowed
@@ -82,6 +82,9 @@ async def _update_reservation_status(
 
 async def _track_added_torrent(db: AsyncSession, tracker: str, torrent: Any) -> None:
     now = utcnow()
+    added_at = ensure_utc_aware(torrent.added_date) or now
+    completed_at = ensure_utc_aware(torrent.done_date)
+
     tracked = TrackedTorrent(
         tracker_name=tracker,
         torrent_hash=torrent.hash_string,
@@ -89,8 +92,8 @@ async def _track_added_torrent(db: AsyncSession, tracker: str, torrent: Any) -> 
         name=torrent.name,
         size_bytes=torrent.total_size,
         status="added",
-        added_at=torrent.added_date or now,
-        completed_at=torrent.done_date,
+        added_at=added_at,
+        completed_at=completed_at,
         removed_at=None,
         downloaded_at_add=torrent.downloaded_ever,
         uploaded_at_add=torrent.uploaded_ever,
