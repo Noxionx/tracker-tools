@@ -10,3 +10,7 @@ requests
 #prometheus_client
 httpx
 aiohttp
+sqlalchemy
+aiosqlite
+pydantic
+transmission-rpc
