@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     app_description: str = (
         "Tracker ratio scraper, Transmission admission controller, forecaster and purge API."
     )
-    app_version: str = "3.0.0"
+    app_version: str = "1.0.0"
 
     config_dir: Path = Field(default=Path(".config"))
     database_url: str | None = None
