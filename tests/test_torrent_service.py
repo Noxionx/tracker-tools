@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
 
+from app.core.time import utcnow
 from app.models.tracker import TorrentReservation, TrackedTorrent
 from app.schemas.torrent import AddTorrentRequest, DecisionResponse, ForecastRequest
-from app.services.torrent_service import admit_torrent, forecast_torrent
+from app.services.torrent_service import (
+    _get_tracker_active_download_commitment,
+    admit_torrent,
+    build_forecast_breakdown,
+    forecast_torrent,
+)
 
 
 @pytest.mark.asyncio
@@ -64,10 +71,11 @@ async def test_admit_torrent_success_persists_reservation_and_tracking(db_sessio
             max_storage_bytes=0,
         )
 
-    async def fake_add_torrent(*, torrent: str, download_dir: str | None, paused: bool):
+    async def fake_add_torrent(*, torrent: str, download_dir: str | None, paused: bool, labels: list[str] | None):
         assert torrent.startswith("magnet:")
         assert download_dir == "/tmp"
         assert paused is False
+        assert labels == ["c411"]
         return SimpleNamespace(
             hash_string="hash123",
             id=42,
@@ -128,7 +136,7 @@ async def test_admit_torrent_failure_marks_reservation_failed(db_session_factory
             max_storage_bytes=0,
         )
 
-    async def fake_add_torrent(*, torrent: str, download_dir: str | None, paused: bool):
+    async def fake_add_torrent(*, torrent: str, download_dir: str | None, paused: bool, labels: list[str] | None):
         raise RuntimeError("transmission unavailable")
 
     monkeypatch.setattr("app.services.torrent_service.forecast_torrent", fake_forecast)
@@ -161,8 +169,8 @@ async def test_forecast_torrent_zero_overrides_fall_back_to_config(monkeypatch) 
     async def fake_ensure_fresh_tracker_stats(_db, _tracker):
         return SimpleNamespace(raw_upload=100.0, raw_download=50.0, raw_ratio=2.0)
 
-    async def fake_get_active_tracker_deltas(_tracker):
-        return 0.0, 0.0, []
+    async def fake_get_tracker_active_download_commitment(_tracker, _scraped_at):
+        return 0.0, []
 
     async def fake_get_pending_reserved_size(_db, _tracker):
         return 0
@@ -179,7 +187,10 @@ async def test_forecast_torrent_zero_overrides_fall_back_to_config(monkeypatch) 
         }
 
     monkeypatch.setattr("app.services.torrent_service.ensure_fresh_tracker_stats", fake_ensure_fresh_tracker_stats)
-    monkeypatch.setattr("app.services.torrent_service._get_active_tracker_deltas", fake_get_active_tracker_deltas)
+    monkeypatch.setattr(
+        "app.services.torrent_service._get_tracker_active_download_commitment",
+        fake_get_tracker_active_download_commitment,
+    )
     monkeypatch.setattr("app.services.torrent_service._get_pending_reserved_size", fake_get_pending_reserved_size)
     monkeypatch.setattr("app.services.torrent_service.storage_allowed", fake_storage_allowed)
     monkeypatch.setattr("app.services.torrent_service._tracker_min_ratio", lambda _tracker: 1.6)
@@ -203,8 +214,8 @@ async def test_forecast_torrent_positive_overrides_are_applied(monkeypatch) -> N
     async def fake_ensure_fresh_tracker_stats(_db, _tracker):
         return SimpleNamespace(raw_upload=100.0, raw_download=50.0, raw_ratio=2.0)
 
-    async def fake_get_active_tracker_deltas(_tracker):
-        return 0.0, 0.0, []
+    async def fake_get_tracker_active_download_commitment(_tracker, _scraped_at):
+        return 0.0, []
 
     async def fake_get_pending_reserved_size(_db, _tracker):
         return 0
@@ -221,7 +232,10 @@ async def test_forecast_torrent_positive_overrides_are_applied(monkeypatch) -> N
         }
 
     monkeypatch.setattr("app.services.torrent_service.ensure_fresh_tracker_stats", fake_ensure_fresh_tracker_stats)
-    monkeypatch.setattr("app.services.torrent_service._get_active_tracker_deltas", fake_get_active_tracker_deltas)
+    monkeypatch.setattr(
+        "app.services.torrent_service._get_tracker_active_download_commitment",
+        fake_get_tracker_active_download_commitment,
+    )
     monkeypatch.setattr("app.services.torrent_service._get_pending_reserved_size", fake_get_pending_reserved_size)
     monkeypatch.setattr("app.services.torrent_service.storage_allowed", fake_storage_allowed)
     monkeypatch.setattr("app.services.torrent_service._tracker_min_ratio", lambda _tracker: 1.6)
@@ -245,8 +259,8 @@ async def test_forecast_torrent_freeleech_impacts_storage_not_ratio(monkeypatch)
     async def fake_ensure_fresh_tracker_stats(_db, _tracker):
         return SimpleNamespace(raw_upload=100.0, raw_download=100.0, raw_ratio=1.0)
 
-    async def fake_get_active_tracker_deltas(_tracker):
-        return 0.0, 0.0, []
+    async def fake_get_tracker_active_download_commitment(_tracker, _scraped_at):
+        return 0.0, []
 
     async def fake_get_pending_reserved_size(_db, _tracker):
         return 0
@@ -263,7 +277,10 @@ async def test_forecast_torrent_freeleech_impacts_storage_not_ratio(monkeypatch)
         }
 
     monkeypatch.setattr("app.services.torrent_service.ensure_fresh_tracker_stats", fake_ensure_fresh_tracker_stats)
-    monkeypatch.setattr("app.services.torrent_service._get_active_tracker_deltas", fake_get_active_tracker_deltas)
+    monkeypatch.setattr(
+        "app.services.torrent_service._get_tracker_active_download_commitment",
+        fake_get_tracker_active_download_commitment,
+    )
     monkeypatch.setattr("app.services.torrent_service._get_pending_reserved_size", fake_get_pending_reserved_size)
     monkeypatch.setattr("app.services.torrent_service.storage_allowed", fake_storage_allowed)
     monkeypatch.setattr("app.services.torrent_service._tracker_min_ratio", lambda _tracker: 0.8)
@@ -287,5 +304,190 @@ async def test_forecast_torrent_freeleech_impacts_storage_not_ratio(monkeypatch)
     assert observed_extra_reserved == [50, 50]
     assert normal_decision.forecast_download == 150.0
     assert normal_decision.allowed is False
-    assert freeleech_decision.forecast_download == 100.0
-    assert freeleech_decision.allowed is True
+    assert freeleech_decision.forecast_download == 150.0
+    assert freeleech_decision.allowed is False
+
+
+@pytest.mark.asyncio
+async def test_forecast_torrent_silverleech_ratio(monkeypatch) -> None:
+    async def fake_ensure_fresh_tracker_stats(_db, _tracker):
+        return SimpleNamespace(raw_upload=100.0, raw_download=100.0, raw_ratio=1.0)
+
+    async def fake_get_tracker_active_download_commitment(_tracker, _scraped_at):
+        return 0.0, []
+
+    async def fake_get_pending_reserved_size(_db, _tracker):
+        return 0
+
+    def fake_storage_allowed(*, extra_reserved_bytes: int, max_storage_bytes: int | None):
+        return True, "Storage allowed", {
+            "current_used_bytes": 10,
+            "forecast_used_bytes": 10 + extra_reserved_bytes,
+            "max_storage_bytes": 1000,
+        }
+
+    monkeypatch.setattr("app.services.torrent_service.ensure_fresh_tracker_stats", fake_ensure_fresh_tracker_stats)
+    monkeypatch.setattr(
+        "app.services.torrent_service._get_tracker_active_download_commitment",
+        fake_get_tracker_active_download_commitment,
+    )
+    monkeypatch.setattr("app.services.torrent_service._get_pending_reserved_size", fake_get_pending_reserved_size)
+    monkeypatch.setattr("app.services.torrent_service.storage_allowed", fake_storage_allowed)
+    monkeypatch.setattr("app.services.torrent_service._tracker_min_ratio", lambda _tracker: 0.8)
+
+    request = ForecastRequest(
+        tracker="c411",
+        torrent="magnet:?xt=urn:btih:silver",
+        size_bytes=50,
+        freeleech_ratio=0.5,
+    )
+
+    decision = await forecast_torrent(db=None, request=request)
+
+    assert decision.forecast_download == 150.0
+
+
+@pytest.mark.asyncio
+async def test_forecast_torrent_anchors_on_tracker_for_completed_untracked(monkeypatch) -> None:
+    async def fake_ensure_fresh_tracker_stats(_db, _tracker):
+        return SimpleNamespace(raw_upload=200.0, raw_download=100.0, raw_ratio=2.0)
+
+    async def fake_get_tracker_active_download_commitment(_tracker, _scraped_at):
+        # Completed untracked torrents should not force permanent cumulative deltas.
+        return 0.0, []
+
+    async def fake_get_pending_reserved_size(_db, _tracker):
+        return 0
+
+    def fake_storage_allowed(*, extra_reserved_bytes: int, max_storage_bytes: int | None):
+        return True, "Storage allowed", {
+            "current_used_bytes": 10,
+            "forecast_used_bytes": 10 + extra_reserved_bytes,
+            "max_storage_bytes": 1000,
+        }
+
+    monkeypatch.setattr("app.services.torrent_service.ensure_fresh_tracker_stats", fake_ensure_fresh_tracker_stats)
+    monkeypatch.setattr(
+        "app.services.torrent_service._get_tracker_active_download_commitment",
+        fake_get_tracker_active_download_commitment,
+    )
+    monkeypatch.setattr("app.services.torrent_service._get_pending_reserved_size", fake_get_pending_reserved_size)
+    monkeypatch.setattr("app.services.torrent_service.storage_allowed", fake_storage_allowed)
+    monkeypatch.setattr("app.services.torrent_service._tracker_min_ratio", lambda _tracker: 1.5)
+
+    request = ForecastRequest(
+        tracker="c411",
+        torrent="magnet:?xt=urn:btih:anchor",
+        size_bytes=0,
+    )
+
+    decision = await forecast_torrent(db=None, request=request)
+
+    assert decision.current_ratio == 2.0
+    assert decision.forecast_ratio == 2.0
+
+
+@pytest.mark.asyncio
+async def test_active_download_commitment_excludes_completed_before_snapshot(monkeypatch) -> None:
+    snapshot = utcnow()
+
+    completed_before = SimpleNamespace(
+        id=1,
+        hash_string="done-before",
+        name="Done Before",
+        total_size=100,
+        downloaded_ever=100.0,
+        uploaded_ever=50.0,
+        ratio=0.5,
+        status="seeding",
+        done_date=snapshot - timedelta(minutes=10),
+        trackers=["https://tracker.c411.org/announce"],
+    )
+    in_progress = SimpleNamespace(
+        id=2,
+        hash_string="in-progress",
+        name="In Progress",
+        total_size=200,
+        downloaded_ever=50.0,
+        uploaded_ever=0.0,
+        ratio=0.0,
+        status="downloading",
+        done_date=None,
+        trackers=["https://tracker.c411.org/announce"],
+    )
+
+    async def fake_list_torrents():
+        return [completed_before, in_progress]
+
+    monkeypatch.setattr("app.services.torrent_service.list_torrents", fake_list_torrents)
+
+    commitment, matched = await _get_tracker_active_download_commitment("c411", snapshot)
+
+    assert commitment == 200.0
+    assert len(matched) == 2
+    assert matched[0]["completed_before_snapshot"] is True
+    assert matched[0]["counted_download_bytes"] == 0.0
+    assert matched[1]["completed_before_snapshot"] is False
+    assert matched[1]["counted_download_bytes"] == 200.0
+
+
+@pytest.mark.asyncio
+async def test_forecast_breakdown_confidence_low_with_many_in_progress(monkeypatch) -> None:
+    snapshot = utcnow()
+
+    async def fake_ensure_fresh_tracker_stats(_db, _tracker):
+        return SimpleNamespace(
+            raw_upload=1000.0,
+            raw_download=500.0,
+            raw_ratio=2.0,
+            scraped_at=snapshot,
+        )
+
+    async def fake_get_pending_reserved_size(_db, _tracker):
+        return 0
+
+    in_progress_a = SimpleNamespace(
+        id=1,
+        hash_string="ip-a",
+        name="IP A",
+        total_size=500,
+        downloaded_ever=100.0,
+        uploaded_ever=10.0,
+        ratio=0.1,
+        status="downloading",
+        done_date=None,
+        trackers=["https://tracker.c411.org/announce"],
+    )
+    in_progress_b = SimpleNamespace(
+        id=2,
+        hash_string="ip-b",
+        name="IP B",
+        total_size=700,
+        downloaded_ever=50.0,
+        uploaded_ever=5.0,
+        ratio=0.1,
+        status="downloading",
+        done_date=None,
+        trackers=["https://tracker.c411.org/announce"],
+    )
+
+    async def fake_list_torrents():
+        return [in_progress_a, in_progress_b]
+
+    monkeypatch.setattr("app.services.torrent_service.ensure_fresh_tracker_stats", fake_ensure_fresh_tracker_stats)
+    monkeypatch.setattr("app.services.torrent_service._get_pending_reserved_size", fake_get_pending_reserved_size)
+    monkeypatch.setattr("app.services.torrent_service.list_torrents", fake_list_torrents)
+
+    breakdown = await build_forecast_breakdown(
+        db=None,
+        request=ForecastRequest(
+            tracker="c411",
+            torrent="magnet:?xt=urn:btih:conf",
+            size_bytes=100,
+        ),
+    )
+
+    assert breakdown["active_download_commitment"] == 1200.0
+    assert breakdown["confidence_level"] == "low"
+    assert breakdown["confidence_score"] <= 0.1
+    assert breakdown["confidence_inputs"]["in_progress_count"] == 2

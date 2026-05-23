@@ -18,8 +18,25 @@ class ForecastRequest(BaseModel):
         default=False,
         description="If true, torrent does not add download volume for ratio forecast but still reserves storage.",
     )
+    freeleech_ratio: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Fraction of download exempted from ratio calculation "
+            "(1.0 = full freeleech, 0.5 = silverleech, 0.0 = normal leech)."
+        ),
+    )
     min_ratio: float | None = None
     max_storage_bytes: int | None = None
+
+    @property
+    def effective_download_ratio(self) -> float:
+        """Return the fraction of download that counts against ratio."""
+
+        if self.freeleech_ratio is not None:
+            return 1.0 - self.freeleech_ratio
+        return 0.0 if self.is_freeleech else 1.0
 
 
 class AddTorrentRequest(ForecastRequest):

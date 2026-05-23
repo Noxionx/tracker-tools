@@ -70,6 +70,7 @@ async def test_forecast_accepts_minimal_payload(api_client, monkeypatch) -> None
         assert request.tracker == "c411"
         assert request.torrent.startswith("magnet:")
         assert request.is_freeleech is False
+        assert request.freeleech_ratio is None
         assert request.min_ratio is None
         assert request.max_storage_bytes is None
         return DecisionResponse(
@@ -116,6 +117,7 @@ async def test_admit_accepts_minimal_payload(api_client, monkeypatch) -> None:
         assert request.tracker == "torr9"
         assert request.torrent.startswith("magnet:")
         assert request.is_freeleech is False
+        assert request.freeleech_ratio is None
         assert request.min_ratio is None
         assert request.max_storage_bytes is None
         return DecisionResponse(
@@ -228,3 +230,44 @@ async def test_debug_latest_snapshots_endpoint(api_client, db_session_factory) -
     expected_top = serialize_tracker_stats(second)
     assert payload["items"][0]["tracker"] == expected_top["tracker"]
     assert payload["items"][0]["upload"] == expected_top["upload"]
+
+
+@pytest.mark.asyncio
+async def test_debug_forecast_breakdown_endpoint(api_client, monkeypatch) -> None:
+    async def fake_build_forecast_breakdown(_db, request):
+        return {
+            "tracker": request.tracker,
+            "base_upload": 100.0,
+            "base_download": 50.0,
+            "active_download_commitment": 200.0,
+            "pending_reserved_size": 0,
+            "candidate_size": 10,
+            "candidate_ratio_download": 10.0,
+            "forecast_upload": 100.0,
+            "forecast_download": 260.0,
+            "conservative_mode": True,
+            "confidence_score": 0.42,
+            "confidence_level": "low",
+            "confidence_inputs": {
+                "active_torrent_count": 3,
+                "in_progress_count": 2,
+                "completed_before_snapshot_count": 1,
+                "active_download_commitment": 200.0,
+                "uncertain_weighted_bytes": 116.0,
+            },
+            "active_torrents": [],
+        }
+
+    monkeypatch.setattr("app.api.routes.debug.build_forecast_breakdown", fake_build_forecast_breakdown)
+
+    response = await api_client.post(
+        "/debug/torrents/forecast-breakdown",
+        json={"tracker": "c411", "torrent": "magnet:?xt=urn:btih:abc", "size_bytes": 10},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["tracker"] == "c411"
+    assert payload["conservative_mode"] is True
+    assert payload["forecast_download"] == 260.0
+    assert payload["confidence_level"] == "low"

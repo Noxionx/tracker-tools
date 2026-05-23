@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.time import utcnow
+from app.core.time import ensure_utc_aware, utcnow
 from app.models.tracker import TorrentReservation, TrackedTorrent
 from app.schemas.torrent import AddTorrentRequest, DecisionResponse, ForecastRequest
 from app.services.storage_service import storage_allowed
@@ -101,18 +101,52 @@ async def _track_added_torrent(db: AsyncSession, tracker: str, torrent: Any) -> 
     await db.commit()
 
 
-async def _get_active_tracker_deltas(tracker: str) -> tuple[float, float, list[dict[str, Any]]]:
+def _torrent_is_complete(torrent: Any) -> bool:
+    if torrent.total_size <= 0:
+        return False
+    return float(torrent.downloaded_ever) >= float(torrent.total_size) * 0.995
+
+
+def _torrent_completed_before_snapshot(torrent: Any, scraped_at: Any) -> bool:
+    if not _torrent_is_complete(torrent):
+        return False
+
+    done_date = ensure_utc_aware(torrent.done_date)
+    snapshot_date = ensure_utc_aware(scraped_at)
+    if done_date is None or snapshot_date is None:
+        return False
+    return done_date <= snapshot_date
+
+
+async def _get_tracker_active_download_commitment(
+    tracker: str,
+    scraped_at: Any,
+) -> tuple[float, list[dict[str, Any]]]:
     torrents = await list_torrents()
-    upload_delta = 0.0
-    download_delta = 0.0
+    download_commitment = 0.0
     matched: list[dict[str, Any]] = []
 
     for torrent in torrents:
         if not torrent_belongs_to_tracker(torrent.trackers, tracker):
             continue
 
-        upload_delta += torrent.uploaded_ever
-        download_delta += torrent.downloaded_ever
+        completed_before_snapshot = _torrent_completed_before_snapshot(torrent, scraped_at)
+        counted_size = 0.0
+        if not completed_before_snapshot:
+            counted_size = float(torrent.total_size or 0)
+            if counted_size <= 0:
+                counted_size = float(torrent.downloaded_ever or 0)
+            download_commitment += counted_size
+
+        is_complete = _torrent_is_complete(torrent)
+        is_in_progress = not is_complete
+        uncertainty_weight = 0.0
+        if not completed_before_snapshot and is_in_progress:
+            uncertainty_weight = 1.0
+        elif not completed_before_snapshot and is_complete:
+            # Complete but counted means completion timing vs snapshot is uncertain.
+            uncertainty_weight = 0.35
+
         matched.append(
             {
                 "id": torrent.id,
@@ -123,10 +157,74 @@ async def _get_active_tracker_deltas(tracker: str) -> tuple[float, float, list[d
                 "uploaded_ever": torrent.uploaded_ever,
                 "ratio": torrent.ratio,
                 "status": torrent.status,
+                "counted_download_bytes": counted_size,
+                "is_complete": is_complete,
+                "is_in_progress": is_in_progress,
+                "completed_before_snapshot": completed_before_snapshot,
+                "uncertainty_weight": uncertainty_weight,
             }
         )
 
-    return upload_delta, download_delta, matched
+    return download_commitment, matched
+
+
+async def build_forecast_breakdown(db: AsyncSession, request: ForecastRequest) -> dict[str, Any]:
+    tracker = request.tracker
+    stats = await ensure_fresh_tracker_stats(db, tracker)
+    pending_reserved_size = await _get_pending_reserved_size(db, tracker)
+
+    active_download_commitment, matched = await _get_tracker_active_download_commitment(
+        tracker,
+        stats.scraped_at,
+    )
+
+    candidate_size = int(request.size_bytes or 0)
+    candidate_ratio_download = float(candidate_size)
+
+    forecast_upload = float(stats.raw_upload)
+    forecast_download = float(stats.raw_download) + active_download_commitment + pending_reserved_size + candidate_ratio_download
+
+    in_progress_count = sum(1 for item in matched if item["is_in_progress"])
+    completed_before_count = sum(1 for item in matched if item["completed_before_snapshot"])
+    uncertain_bytes = sum(item["counted_download_bytes"] * item["uncertainty_weight"] for item in matched)
+    confidence_denominator = active_download_commitment if active_download_commitment > 0 else 1.0
+    confidence_penalty = min(1.0, uncertain_bytes / confidence_denominator)
+    confidence_score = max(0.0, round(1.0 - confidence_penalty, 3))
+
+    if confidence_score >= 0.8:
+        confidence_level = "high"
+    elif confidence_score >= 0.55:
+        confidence_level = "medium"
+    else:
+        confidence_level = "low"
+
+    return {
+        "tracker": tracker,
+        "scraped_at": stats.scraped_at,
+        "base_upload": float(stats.raw_upload),
+        "base_download": float(stats.raw_download),
+        "base_ratio": float(stats.raw_ratio),
+        "active_download_commitment": active_download_commitment,
+        "pending_reserved_size": pending_reserved_size,
+        "candidate_size": candidate_size,
+        "is_freeleech": request.is_freeleech,
+        "freeleech_ratio": request.freeleech_ratio,
+        "effective_download_ratio_input": request.effective_download_ratio,
+        "conservative_mode": True,
+        "confidence_score": confidence_score,
+        "confidence_level": confidence_level,
+        "confidence_inputs": {
+            "active_torrent_count": len(matched),
+            "in_progress_count": in_progress_count,
+            "completed_before_snapshot_count": completed_before_count,
+            "active_download_commitment": active_download_commitment,
+            "uncertain_weighted_bytes": uncertain_bytes,
+        },
+        "candidate_ratio_download": candidate_ratio_download,
+        "forecast_upload": forecast_upload,
+        "forecast_download": forecast_download,
+        "active_torrents": matched,
+    }
 
 
 async def forecast_torrent(db: AsyncSession, request: ForecastRequest) -> DecisionResponse:
@@ -139,14 +237,11 @@ async def forecast_torrent(db: AsyncSession, request: ForecastRequest) -> Decisi
         else None
     )
 
-    stats = await ensure_fresh_tracker_stats(db, tracker)
-    active_upload_delta, active_download_delta, _ = await _get_active_tracker_deltas(tracker)
-    pending_reserved_size = await _get_pending_reserved_size(db, tracker)
+    breakdown = await build_forecast_breakdown(db, request)
 
-    candidate_size = int(request.size_bytes or 0)
-    candidate_ratio_download = 0 if request.is_freeleech else candidate_size
-    forecast_upload = stats.raw_upload + active_upload_delta
-    forecast_download = stats.raw_download + active_download_delta + pending_reserved_size + candidate_ratio_download
+    candidate_size = int(breakdown["candidate_size"])
+    forecast_upload = float(breakdown["forecast_upload"])
+    forecast_download = float(breakdown["forecast_download"])
     if forecast_download > 0:
         forecast_ratio = forecast_upload / forecast_download
     elif forecast_upload > 0:
@@ -154,7 +249,7 @@ async def forecast_torrent(db: AsyncSession, request: ForecastRequest) -> Decisi
     else:
         forecast_ratio = 0.0
 
-    extra_storage = pending_reserved_size + candidate_size
+    extra_storage = int(breakdown["pending_reserved_size"]) + candidate_size
     storage_ok, storage_reason, storage = storage_allowed(
         extra_reserved_bytes=extra_storage,
         max_storage_bytes=max_storage_override,
@@ -173,11 +268,11 @@ async def forecast_torrent(db: AsyncSession, request: ForecastRequest) -> Decisi
         added=False,
         reason=reason,
         tracker=tracker,
-        current_ratio=stats.raw_ratio,
+        current_ratio=float(breakdown["base_ratio"]),
         forecast_ratio=forecast_ratio,
         minimum_ratio=min_ratio,
-        current_upload=stats.raw_upload,
-        current_download=stats.raw_download,
+        current_upload=float(breakdown["base_upload"]),
+        current_download=float(breakdown["base_download"]),
         forecast_upload=forecast_upload,
         forecast_download=forecast_download,
         current_storage_bytes=storage["current_used_bytes"],
@@ -209,6 +304,7 @@ async def admit_torrent(db: AsyncSession, request: AddTorrentRequest) -> Decisio
                 torrent=request.torrent,
                 download_dir=download_dir,
                 paused=request.paused,
+                labels=[tracker],
             )
 
             await _update_reservation_status(

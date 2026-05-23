@@ -88,10 +88,29 @@ async def list_torrents() -> list[TorrentInfo]:
     return await asyncio.to_thread(run)
 
 
-async def add_torrent(torrent: str, download_dir: str | None = None, paused: bool = False) -> TorrentInfo:
+async def add_torrent(
+    torrent: str,
+    download_dir: str | None = None,
+    paused: bool = False,
+    labels: list[str] | None = None,
+) -> TorrentInfo:
     def run() -> TorrentInfo:
         client = _connect()
-        added = client.add_torrent(torrent=torrent, download_dir=download_dir, paused=paused)
+        kwargs: dict[str, object] = {
+            "torrent": torrent,
+            "download_dir": download_dir,
+            "paused": paused,
+        }
+        if labels:
+            kwargs["labels"] = labels
+
+        try:
+            added = client.add_torrent(**kwargs)
+        except TypeError:
+            # Backward compatibility: some transmission-rpc versions may not expose labels.
+            kwargs.pop("labels", None)
+            added = client.add_torrent(**kwargs)
+
         return _to_info(client.get_torrent(added.id))
 
     return await asyncio.to_thread(run)

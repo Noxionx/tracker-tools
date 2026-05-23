@@ -283,21 +283,34 @@ Interactive OpenAPI docs are available at `/docs` when the application is runnin
 
 - `GET /storage`
 - `GET /debug/latest-snapshots`
+- `POST /debug/torrents/forecast-breakdown`
+
+`/debug/torrents/forecast-breakdown` includes confidence metadata to assess forecast reliability:
+- `confidence_score` in `[0.0, 1.0]`
+- `confidence_level` in `high|medium|low`
+- `confidence_inputs` details (in-progress count, uncertain weighted bytes, active commitment)
 
 ## Request Examples
 
 ### Forecast (minimal payload)
 
-`min_ratio`, `max_storage_bytes` and `is_freeleech` are optional.
+`min_ratio`, `max_storage_bytes`, `freeleech_ratio` and `is_freeleech` are optional.
 
 - Omit `min_ratio` and `max_storage_bytes` to use configured defaults.
-- Set `is_freeleech=true` to ignore candidate download impact on ratio forecast while still applying storage constraints.
+
+Forecast now uses a conservative model per tracker:
+- Base comes from tracker stats snapshot at time `T`.
+- Torrents completed before `T` are not counted again.
+- Torrents still in progress are counted at full size.
+- Candidate torrent is counted at full size.
+
+`freeleech_ratio` and `is_freeleech` are accepted and exposed in debug breakdown for operational context. In conservative mode, candidate download is still counted at full size.
 
 ```json
 {
   "tracker": "c411",
   "torrent": "magnet:?xt=urn:btih:...",
-  "is_freeleech": true
+  "freeleech_ratio": 0.5
 }
 ```
 
