@@ -171,11 +171,12 @@ async def _get_tracker_active_download_commitment(
 async def build_forecast_breakdown(db: AsyncSession, request: ForecastRequest) -> dict[str, Any]:
     tracker = request.tracker
     stats = await ensure_fresh_tracker_stats(db, tracker)
+    scraped_at = getattr(stats, "scraped_at", None)
     pending_reserved_size = await _get_pending_reserved_size(db, tracker)
 
     active_download_commitment, matched = await _get_tracker_active_download_commitment(
         tracker,
-        stats.scraped_at,
+        scraped_at,
     )
 
     candidate_size = int(request.size_bytes or 0)
@@ -200,7 +201,7 @@ async def build_forecast_breakdown(db: AsyncSession, request: ForecastRequest) -
 
     return {
         "tracker": tracker,
-        "scraped_at": stats.scraped_at,
+        "scraped_at": scraped_at,
         "base_upload": float(stats.raw_upload),
         "base_download": float(stats.raw_download),
         "base_ratio": float(stats.raw_ratio),
